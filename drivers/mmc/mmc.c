@@ -452,18 +452,25 @@ int mmc_send_stop_transmission(struct mmc *mmc, bool write)
 	return mmc_send_cmd(mmc, &cmd, NULL);
 }
 
+/**
+ * mmc_read_blocks() - Read blocks with a single read command
+ *
+ * Return: 0 on success, -ve on error
+ */
 static int mmc_read_blocks(struct mmc *mmc, void *dst, lbaint_t start,
 			   lbaint_t blkcnt)
 {
 	struct mmc_cmd cmd;
 	struct mmc_data data;
+	int err;
 
 	if (blkcnt > 1 && (mmc->host_caps & MMC_CAP_CMD23)) {
 		cmd.cmdidx = MMC_CMD_SET_BLOCK_COUNT;
 		cmd.cmdarg = blkcnt & 0x0000ffff;
 		cmd.resp_type = MMC_RSP_R1;
-		if (mmc_send_cmd(mmc, &cmd, NULL))
-			return 0;
+		err = mmc_send_cmd(mmc, &cmd, NULL);
+		if (err)
+			return err;
 	}
 
 	if (blkcnt > 1)
@@ -483,19 +490,21 @@ static int mmc_read_blocks(struct mmc *mmc, void *dst, lbaint_t start,
 	data.blocksize = mmc->read_bl_len;
 	data.flags = MMC_DATA_READ;
 
-	if (mmc_send_cmd(mmc, &cmd, &data))
-		return 0;
+	err = mmc_send_cmd(mmc, &cmd, &data);
+	if (err)
+		return err;
 
 	if (blkcnt > 1 && !(mmc->host_caps & MMC_CAP_CMD23)) {
-		if (mmc_send_stop_transmission(mmc, false)) {
+		err = mmc_send_stop_transmission(mmc, false);
+		if (err) {
 #if !defined(CONFIG_XPL_BUILD) || defined(CONFIG_SPL_LIBCOMMON_SUPPORT)
 			log_err("mmc fail to send stop cmd\n");
 #endif
-			return 0;
+			return err;
 		}
 	}
 
-	return blkcnt;
+	return 0;
 }
 
 #if !CONFIG_IS_ENABLED(DM_MMC)
@@ -555,7 +564,7 @@ ulong mmc_bread(struct blk_desc *block_dev, lbaint_t start, lbaint_t blkcnt,
 
 	do {
 		cur = (blocks_todo > b_max) ? b_max : blocks_todo;
-		if (mmc_read_blocks(mmc, dst, start, cur) != cur) {
+		if (mmc_read_blocks(mmc, dst, start, cur)) {
 			pr_debug("%s: Failed to read blocks\n", __func__);
 			return 0;
 		}
