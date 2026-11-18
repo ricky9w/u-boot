@@ -48,6 +48,8 @@
 #define ARASAN_VENDOR_ENHANCED_STROBE	BIT(0)
 
 /* Rockchip specific Registers */
+#define DWCMSHC_HOST_CTRL3		0x508
+#define DWCMSHC_HOST_CTRL3_CMD_CONFLICT	BIT(0)
 #define DWCMSHC_EMMC_EMMC_CTRL		0x52c
 #define DWCMSHC_CARD_IS_EMMC		BIT(0)
 #define DWCMSHC_ENHANCED_STROBE		BIT(8)
@@ -310,10 +312,16 @@ static void rk3568_sdhci_set_clock(struct sdhci_host *host, u32 div)
 	struct rockchip_sdhc *priv = container_of(host, struct rockchip_sdhc, host);
 	struct mmc *mmc = host->mmc;
 	ulong rate;
+	u32 reg;
 
 	rate = clk_set_rate(&priv->emmc_clk, mmc->clock);
 	if (IS_ERR_VALUE(rate))
 		printf("%s: Set clock rate failed: %ld\n", __func__, (long)rate);
+
+	/* Disable the command conflict check, as the Linux driver does */
+	reg = sdhci_readl(host, DWCMSHC_HOST_CTRL3);
+	reg &= ~DWCMSHC_HOST_CTRL3_CMD_CONFLICT;
+	sdhci_writel(host, reg, DWCMSHC_HOST_CTRL3);
 }
 
 static int rk3568_sdhci_config_dll(struct sdhci_host *host, u32 clock, bool enable)
