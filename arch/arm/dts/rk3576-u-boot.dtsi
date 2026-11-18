@@ -59,6 +59,13 @@
 &emmc_strb {
 	bootph-pre-ram;
 	bootph-some-ram;
+	/*
+	 * Pull the data strobe down, as Linux commit 330f3d6b0bd5 does: with no
+	 * pull it floats between transfers in HS400 and causes data CRC
+	 * errors. Pull-down is also the reset value of the pad. Drop this once
+	 * dts/upstream has that commit.
+	 */
+	rockchip,pins = <1 RK_PB2 1 &pcfg_pull_down>;
 };
 
 &fspi0_csn0 {
