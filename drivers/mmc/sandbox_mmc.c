@@ -30,7 +30,25 @@ struct sandbox_mmc_priv {
 	char *buf;
 	int csize;	/* CSIZE value to report */
 	int size;
+	int read_fails;	/* number of read commands still to fail */
+	int go_idles;	/* number of CMD0 received */
+	int stops;	/* number of CMD12 received */
 };
+
+void sandbox_mmc_set_read_fails(struct udevice *dev, int count)
+{
+	struct sandbox_mmc_priv *priv = dev_get_priv(dev);
+
+	priv->read_fails = count;
+}
+
+void sandbox_mmc_get_counts(struct udevice *dev, int *go_idles, int *stops)
+{
+	struct sandbox_mmc_priv *priv = dev_get_priv(dev);
+
+	*go_idles = priv->go_idles;
+	*stops = priv->stops;
+}
 
 /**
  * sandbox_mmc_send_cmd() - Emulate SD commands
@@ -43,6 +61,9 @@ static int sandbox_mmc_send_cmd(struct udevice *dev, struct mmc_cmd *cmd,
 {
 	struct sandbox_mmc_priv *priv = dev_get_priv(dev);
 	static ulong erase_start, erase_end;
+
+	if (cmd->cmdidx == MMC_CMD_GO_IDLE_STATE)
+		priv->go_idles++;
 
 	switch (cmd->cmdidx) {
 	case MMC_CMD_ALL_SEND_CID:
@@ -79,6 +100,10 @@ static int sandbox_mmc_send_cmd(struct udevice *dev, struct mmc_cmd *cmd,
 	}
 	case MMC_CMD_READ_SINGLE_BLOCK:
 	case MMC_CMD_READ_MULTIPLE_BLOCK:
+		if (priv->read_fails > 0) {
+			priv->read_fails--;
+			return -EIO;
+		}
 		memcpy(data->dest, &priv->buf[cmd->cmdarg * data->blocksize],
 		       data->blocks * data->blocksize);
 		break;
@@ -88,6 +113,7 @@ static int sandbox_mmc_send_cmd(struct udevice *dev, struct mmc_cmd *cmd,
 		       data->blocks * data->blocksize);
 		break;
 	case MMC_CMD_STOP_TRANSMISSION:
+		priv->stops++;
 		break;
 	case SD_CMD_ERASE_WR_BLK_START:
 		erase_start = cmd->cmdarg;

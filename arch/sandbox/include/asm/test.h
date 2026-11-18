@@ -369,4 +369,21 @@ bool sandbox_sf_bootdev_enabled(void);
  */
 void sandbox_sf_set_enable_bootdevs(bool enable);
 
+/**
+ * sandbox_mmc_set_read_fails() - Make the next read commands fail
+ *
+ * @dev: sandbox MMC device
+ * @count: number of read commands that fail with -EIO
+ */
+void sandbox_mmc_set_read_fails(struct udevice *dev, int count);
+
+/**
+ * sandbox_mmc_get_counts() - Get the number of some commands received
+ *
+ * @dev: sandbox MMC device
+ * @go_idles: returns the number of CMD0 (card initializations)
+ * @stops: returns the number of CMD12
+ */
+void sandbox_mmc_get_counts(struct udevice *dev, int *go_idles, int *stops);
+
 #endif

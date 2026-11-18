@@ -9,6 +9,7 @@
 #include <dm/test.h>
 #include <test/test.h>
 #include <test/ut.h>
+#include <asm/test.h>
 
 /*
  * Basic test of the mmc uclass. We could expand this by implementing an MMC
@@ -51,3 +52,52 @@ static int dm_test_mmc_blk(struct unit_test_state *uts)
 	return 0;
 }
 DM_TEST(dm_test_mmc_blk, UTF_SCAN_PDATA | UTF_SCAN_FDT);
+
+/* Test that a failed read is retried after initializing the card again */
+static int dm_test_mmc_read_retry(struct unit_test_state *uts)
+{
+	struct blk_desc *dev_desc;
+	struct udevice *dev;
+	char write[2048], read[2048];
+	int go_idles, stops, go_idles0, stops0;
+	int i;
+
+	ut_assertok(blk_get_device_by_str("mmc", "0", &dev_desc));
+	dev = dev_get_parent(dev_desc->bdev);
+	for (i = 0; i < sizeof(write); i++)
+		write[i] = i;
+	ut_asserteq(4, blk_dwrite(dev_desc, 0, 4, write));
+
+	/* One failed read: stopped, card initialized again, read again */
+	sandbox_mmc_get_counts(dev, &go_idles0, &stops0);
+	sandbox_mmc_set_read_fails(dev, 1);
+	memset(read, 0, sizeof(read));
+	blkcache_invalidate(dev_desc->uclass_id, dev_desc->devnum);
+	ut_asserteq(4, blk_dread(dev_desc, 0, 4, read));
+	ut_asserteq_mem(write, read, sizeof(write));
+	sandbox_mmc_get_counts(dev, &go_idles, &stops);
+	ut_asserteq(go_idles0 + 1, go_idles);
+	/* CMD12 after the failed read and after the successful one */
+	ut_asserteq(stops0 + 2, stops);
+
+	/* Three failed reads are the most that are retried */
+	sandbox_mmc_set_read_fails(dev, 3);
+	memset(read, 0, sizeof(read));
+	blkcache_invalidate(dev_desc->uclass_id, dev_desc->devnum);
+	ut_asserteq(4, blk_dread(dev_desc, 0, 4, read));
+	ut_asserteq_mem(write, read, sizeof(write));
+
+	sandbox_mmc_set_read_fails(dev, 4);
+	blkcache_invalidate(dev_desc->uclass_id, dev_desc->devnum);
+	ut_asserteq(0, blk_dread(dev_desc, 0, 4, read));
+
+	/* The card works again afterwards */
+	sandbox_mmc_set_read_fails(dev, 0);
+	memset(read, 0, sizeof(read));
+	blkcache_invalidate(dev_desc->uclass_id, dev_desc->devnum);
+	ut_asserteq(4, blk_dread(dev_desc, 0, 4, read));
+	ut_asserteq_mem(write, read, sizeof(write));
+
+	return 0;
+}
+DM_TEST(dm_test_mmc_read_retry, UTF_SCAN_PDATA | UTF_SCAN_FDT);
