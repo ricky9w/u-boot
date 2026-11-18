@@ -711,6 +711,7 @@ static const struct sdhci_data rk3576_data = {
 	.set_ios_post = rk3568_sdhci_set_ios_post,
 	.set_clock = rk3568_sdhci_set_clock,
 	.config_dll = rk3568_sdhci_config_dll,
+	.flags = FLAG_TAPVALUE_FROM_SW,
 	.hs200_txclk_tapnum = DLL_TXCLK_TAPNUM_DEFAULT,
 	.hs400_txclk_tapnum = 0x7,
 	.hs400_cmdout_tapnum = 0x7,
