@@ -23,6 +23,7 @@ ifeq ($(CONFIG_XPL_BUILD)$(CONFIG_TPL_BUILD),)
 # meaning "turn it off".
 obj-y += boot_mode.o
 obj-$(CONFIG_ROCKCHIP_COMMON_BOARD) += board.o
+obj-$(CONFIG_R76S_LAB) += r76s_lab.o
 endif
 
 ifeq ($(CONFIG_TPL_BUILD),)

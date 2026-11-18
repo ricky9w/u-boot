@@ -717,12 +717,17 @@ static inline void pre_console_puts(const char *s) {}
 static inline void print_pre_console_buffer(int flushpoint) {}
 #endif
 
+/* NanoPi R76S lab build, arch/arm/mach-rockchip/r76s_lab.c */
+void r76s_ramlog_puts(const char *s);
+
 void putc(const char c)
 {
 	if (!gd)
 		return;
 
 	console_record_putc(c);
+	if (CONFIG_IS_ENABLED(R76S_LAB))
+		r76s_ramlog_puts((const char[]){ c, 0 });
 
 	/* sandbox can send characters to stdout before it has a console */
 	if (IS_ENABLED(CONFIG_SANDBOX) && !(gd->flags & GD_FLG_SERIAL_READY)) {
@@ -764,6 +769,8 @@ void puts(const char *s)
 		return;
 
 	console_record_puts(s);
+	if (CONFIG_IS_ENABLED(R76S_LAB))
+		r76s_ramlog_puts(s);
 
 	/* sandbox can send characters to stdout before it has a console */
 	if (IS_ENABLED(CONFIG_SANDBOX) && !(gd->flags & GD_FLG_SERIAL_READY)) {

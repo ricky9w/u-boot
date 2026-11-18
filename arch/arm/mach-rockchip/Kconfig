@@ -861,4 +861,44 @@ config SPL_STACK_R_MALLOC_SIMPLE_LEN
 	default 0x200000 if SPL_STACK_R_ADDR = 0x03e00000
 
 endif
+
+config R76S_LAB
+	bool "NanoPi R76S lab builds of U-Boot proper"
+	depends on ROCKCHIP_RK3576
+	select LINUX_KERNEL_IMAGE_HEADER
+	help
+	  Experiment-only support for the hybrid build on the NanoPi R76S:
+	  mainline U-Boot proper started by the vendor SPL and BL31 from the
+	  first FIT copy in the uboot partition, with the vendor FIT as the
+	  second copy. The console log also goes to the persistent RAM zone
+	  that Linux's earlycon=ramlog writes, and the "r76s" command prints
+	  diagnostics. The Linux image header lets the vendor U-Boot boot test
+	  variants like a kernel. Not for production use.
+
+# The vendor U-Boot leaves an image with the "place anywhere" header flag at
+# its load address; the boot script loads test variants at the link address.
+config LNX_KRNL_IMG_TEXT_OFFSET_BASE
+	default TEXT_BASE if R76S_LAB
+
+config R76S_LAB_ATAGS_COPY
+	hex "Where the boot script saved the vendor ATAGS (0: nowhere)"
+	depends on R76S_LAB
+	default 0x0
+	help
+	  For a test of the hybrid build booted by the vendor U-Boot like a
+	  kernel: the vendor U-Boot clears the start of the ATAGS before it
+	  jumps, so its boot script copies them here first, and U-Boot copies
+	  them back before it reads the DRAM banks from them
+	  (board_early_init_f, so also select BOARD_EARLY_INIT_F).
+
+config R76S_LAB_RAMLOG_ADDR
+	hex "Address of the persistent console log zone"
+	depends on R76S_LAB
+	default 0x401c0000
+
+config R76S_LAB_RAMLOG_SIZE
+	hex "Size of the persistent console log zone"
+	depends on R76S_LAB
+	default 0x30000
+
 endif
