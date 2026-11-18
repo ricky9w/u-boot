@@ -527,6 +527,38 @@ int mmc_get_b_max(struct mmc *mmc, void *dst, lbaint_t blkcnt)
 }
 #endif
 
+/* How often mmc_bread() re-initializes the card to retry a failed read */
+#define MMC_READ_RETRIES	3
+
+/**
+ * mmc_bread_reinit() - Initialize the card again after a failed read
+ *
+ * This selects the bus mode again from the start, including tuning where the
+ * mode needs it. Afterwards the card is in the user area, so select @hwpart
+ * again.
+ *
+ * Return: 0 on success, -ve on error
+ */
+static int mmc_bread_reinit(struct mmc *mmc, struct blk_desc *block_dev,
+			    int hwpart)
+{
+	int err;
+
+	mmc->has_init = 0;
+	err = mmc_init(mmc);
+	if (err)
+		return err;
+
+	if (CONFIG_IS_ENABLED(MMC_TINY))
+		err = mmc_switch_part(mmc, hwpart);
+	else
+		err = blk_dselect_hwpart(block_dev, hwpart);
+	if (err < 0)
+		return err;
+
+	return mmc_set_blocklen(mmc, mmc->read_bl_len);
+}
+
 #if CONFIG_IS_ENABLED(BLK)
 ulong mmc_bread(struct udevice *dev, lbaint_t start, lbaint_t blkcnt, void *dst)
 #else
@@ -538,9 +570,10 @@ ulong mmc_bread(struct blk_desc *block_dev, lbaint_t start, lbaint_t blkcnt,
 	struct blk_desc *block_dev = dev_get_uclass_plat(dev);
 #endif
 	int dev_num = block_dev->devnum;
+	int hwpart = block_dev->hwpart;
 	int err;
 	lbaint_t cur, blocks_todo = blkcnt;
-	uint b_max;
+	uint b_max, retries = 0;
 
 	if (blkcnt == 0)
 		return 0;
@@ -574,9 +607,23 @@ ulong mmc_bread(struct blk_desc *block_dev, lbaint_t start, lbaint_t blkcnt,
 
 	do {
 		cur = (blocks_todo > b_max) ? b_max : blocks_todo;
-		if (mmc_read_blocks(mmc, dst, start, cur)) {
-			pr_debug("%s: Failed to read blocks\n", __func__);
-			return 0;
+		err = mmc_read_blocks(mmc, dst, start, cur);
+		if (err) {
+			/*
+			 * Errors on a working card are rare and transient, and
+			 * re-initializing recovers from them, as in the Rockchip
+			 * vendor U-Boot. Report each one, so that they are not
+			 * hidden by the retry.
+			 */
+#if !defined(CONFIG_XPL_BUILD) || defined(CONFIG_SPL_LIBCOMMON_SUPPORT)
+			log_warning("mmc%d: reading " LBAFU " blocks at " LBAF
+				    " failed (%d)\n", dev_num, cur, start, err);
+#endif
+			if (retries++ == MMC_READ_RETRIES ||
+			    mmc_bread_reinit(mmc, block_dev, hwpart))
+				return 0;
+			b_max = mmc_get_b_max(mmc, dst, blocks_todo);
+			continue;
 		}
 		blocks_todo -= cur;
 		start += cur;
