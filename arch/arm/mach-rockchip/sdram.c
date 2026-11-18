@@ -50,6 +50,7 @@ enum tag_magic {
 	ATAG_CORE = 0x54410001,
 	ATAG_SERIAL = 0x54410050,
 	ATAG_DDR_MEM = 0x54410052,
+	ATAG_TOS_MEM = 0x54410053,
 	ATAG_MAX = 0x544100ff,
 };
 
@@ -88,6 +89,17 @@ struct tag_ddr_mem {
 	u32 hash;
 } __packed;
 
+/* Start of the TOS_MEM tag: where the loader put OP-TEE */
+struct tag_tos_mem {
+	u32 version;
+	struct {
+		char name[8];
+		u64 phy_addr;
+		u32 size;
+		u32 flags;
+	} tee_mem;
+} __packed;
+
 static u32 js_hash(const void *buf, u32 len)
 {
 	u32 i, hash = 0x47C6A7E6;
@@ -101,12 +113,104 @@ static u32 js_hash(const void *buf, u32 len)
 	return hash;
 }
 
+/*
+ * Find the tag with @magic in the ATAGS that the loader left, or NULL if there
+ * is none or the list is broken.
+ */
+static const struct tag_header *rockchip_atag_find(u32 magic)
+{
+	const u32 *addr = (const u32 *)ATAGS_PHYS_BASE;
+	const struct tag_header *tag_h;
+
+	while (addr < (const u32 *)ATAGS_PHYS_END) {
+		tag_h = (const struct tag_header *)addr;
+		if (!tag_h->size)
+			return NULL;
+
+		switch (tag_h->magic) {
+		case ATAG_NONE:
+		case ATAG_CORE:
+		case ATAG_SERIAL ... ATAG_MAX:
+			break;
+		default:
+			debug("Invalid magic (0x%08x) for ATAG at 0x%p\n",
+			      tag_h->magic, addr);
+			return NULL;
+		}
+
+		if (addr + tag_h->size > (const u32 *)ATAGS_PHYS_END)
+			return NULL;
+		if (tag_h->magic == magic)
+			return tag_h;
+		addr += tag_h->size;
+	}
+
+	return NULL;
+}
+
+/* The last word of a tag is the hash of the rest, or 0 for none */
+static bool rockchip_atag_hash_ok(const struct tag_header *tag_h)
+{
+	u32 hash = ((const u32 *)tag_h)[tag_h->size - 1];
+
+	if (!hash || hash == js_hash(tag_h, sizeof(u32) * (tag_h->size - 1)))
+		return true;
+
+	debug("Incorrect hash for tag (0x%08x)\n", tag_h->magic);
+	return false;
+}
+
+/*
+ * Leave out of the DRAM banks the memory where the loader put OP-TEE, as told
+ * by the TOS_MEM tag. The Rockchip vendor SPL loads OP-TEE into DRAM and its
+ * BL31 reports it there; mainline SPL leaves no such tag.
+ */
+static int rockchip_dram_leave_out_tos(void)
+{
+	const struct tag_header *tag_h = rockchip_atag_find(ATAG_TOS_MEM);
+	const struct tag_tos_mem *tos;
+	phys_addr_t start, end, bank_end;
+	int i, n;
+
+	if (!tag_h || !rockchip_atag_hash_ok(tag_h))
+		return 0;
+	tos = (const struct tag_tos_mem *)(tag_h + 1);
+	if (tos->tee_mem.flags != 1 || !tos->tee_mem.size)
+		return 0;
+	start = tos->tee_mem.phy_addr;
+	end = start + tos->tee_mem.size;
+
+	for (n = 0; n < CONFIG_NR_DRAM_BANKS && gd->dram[n].size; n++)
+		;
+	for (i = 0; i < n; i++) {
+		bank_end = gd->dram[i].start + gd->dram[i].size;
+		if (end <= gd->dram[i].start || start >= bank_end)
+			continue;
+
+		if (start > gd->dram[i].start && end < bank_end) {
+			/* Inside the bank: split it in two */
+			if (n == CONFIG_NR_DRAM_BANKS)
+				return -ENOMEM;
+			memmove(&gd->dram[i + 2], &gd->dram[i + 1],
+				(n - i - 1) * sizeof(gd->dram[0]));
+			gd->dram[i + 1].start = end;
+			gd->dram[i + 1].size = bank_end - end;
+			gd->dram[i].size = start - gd->dram[i].start;
+		} else if (start > gd->dram[i].start) {
+			gd->dram[i].size = start - gd->dram[i].start;
+		} else {
+			gd->dram[i].size = end < bank_end ? bank_end - end : 0;
+			gd->dram[i].start = end < bank_end ? end : bank_end;
+		}
+	}
+
+	return 0;
+}
+
 static int rockchip_dram_init_banksize(void)
 {
-	const struct tag_header *tag_h = NULL;
-	u32 *addr = (void *)ATAGS_PHYS_BASE;
+	const struct tag_header *tag_h;
 	struct tag_ddr_mem *ddr_info;
-	u32 calc_hash;
 	u8 i, j;
 
 	if (!IS_ENABLED(CONFIG_ROCKCHIP_RK3588) &&
@@ -118,55 +222,16 @@ static int rockchip_dram_init_banksize(void)
 	if (!IS_ENABLED(CONFIG_ROCKCHIP_EXTERNAL_TPL))
 		return -ENOTSUPP;
 
-	/* Find DDR_MEM tag */
-	while (addr < (u32 *)ATAGS_PHYS_END) {
-		tag_h = (const struct tag_header *)addr;
-
-		if (!tag_h->size) {
-			debug("End of ATAGS (0-size tag), no DDR_MEM found\n");
-			return -ENODATA;
-		}
-
-		if (tag_h->magic == ATAG_DDR_MEM)
-			break;
-
-		switch (tag_h->magic) {
-		case ATAG_NONE:
-		case ATAG_CORE:
-		case ATAG_SERIAL ... ATAG_MAX:
-			addr += tag_h->size;
-			continue;
-		default:
-			debug("Invalid magic (0x%08x) for ATAG at 0x%p\n",
-			      tag_h->magic, addr);
-			return -EINVAL;
-		}
-	}
-
-	if (addr >= (u32 *)ATAGS_PHYS_END ||
-	    (tag_h && (addr + tag_h->size > (u32 *)ATAGS_PHYS_END))) {
-		debug("End of ATAGS, no DDR_MEM found\n");
+	tag_h = rockchip_atag_find(ATAG_DDR_MEM);
+	if (!tag_h || !rockchip_atag_hash_ok(tag_h))
 		return -ENODATA;
-	}
 
 	/* Data is right after the magic member of the tag_header struct */
-	ddr_info = (struct tag_ddr_mem *)(&tag_h->magic + 1);
+	ddr_info = (struct tag_ddr_mem *)(tag_h + 1);
 	if (!ddr_info->count || ddr_info->count > CONFIG_NR_DRAM_BANKS) {
 		debug("Too many ATAG banks, got (%d) but max allowed (%d)\n",
 		      ddr_info->count, CONFIG_NR_DRAM_BANKS);
 		return -ENOMEM;
-	}
-
-	if (!ddr_info->hash) {
-		debug("No hash for tag (0x%08x)\n", tag_h->magic);
-	} else {
-		calc_hash = js_hash(addr, sizeof(u32) * (tag_h->size - 1));
-
-		if (calc_hash != ddr_info->hash) {
-			debug("Incorrect hash for tag (0x%08x), got (0x%08x) expected (0x%08x)\n",
-			      tag_h->magic, ddr_info->hash, calc_hash);
-			return -EINVAL;
-		}
 	}
 
 	/*
@@ -285,7 +350,7 @@ static int rockchip_dram_init_banksize(void)
 		gd->dram[j].size = size;
 	}
 
-	return 0;
+	return rockchip_dram_leave_out_tos();
 }
 #endif
 
