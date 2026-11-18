@@ -491,8 +491,18 @@ static int mmc_read_blocks(struct mmc *mmc, void *dst, lbaint_t start,
 	data.flags = MMC_DATA_READ;
 
 	err = mmc_send_cmd(mmc, &cmd, &data);
-	if (err)
+	if (err) {
+		/*
+		 * A multiple block read that fails can leave the card in the
+		 * sending-data state, where it ignores every command except
+		 * CMD12 and CMD13. Stop the transfer so that the card can be
+		 * used again; this fails harmlessly if the card already
+		 * stopped.
+		 */
+		if (blkcnt > 1)
+			mmc_send_stop_transmission(mmc, false);
 		return err;
+	}
 
 	if (blkcnt > 1 && !(mmc->host_caps & MMC_CAP_CMD23)) {
 		err = mmc_send_stop_transmission(mmc, false);
