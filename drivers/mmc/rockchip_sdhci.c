@@ -16,6 +16,7 @@
 #include <linux/iopoll.h>
 #include <malloc.h>
 #include <mapmem.h>
+#include <reset.h>
 #include "mmc_private.h"
 #include <sdhci.h>
 #include <syscon.h>
@@ -63,6 +64,8 @@
 #define DWCMSHC_EMMC_DLL_TXCLK		0x808
 #define DWCMSHC_EMMC_DLL_STRBIN		0x80c
 #define DWCMSHC_EMMC_DLL_CMDOUT		0x810
+#define DWCMSHC_EMMC_MISC_CON		0x81c
+#define MISC_INTCLK_EN			BIT(1)
 #define DWCMSHC_EMMC_DLL_STATUS0	0x840
 #define DWCMSHC_EMMC_DLL_STATUS1	0x844
 #define DWCMSHC_EMMC_DLL_START		BIT(0)
@@ -599,6 +602,29 @@ static struct sdhci_ops rockchip_sdhci_ops = {
 	.set_enhanced_strobe = rockchip_sdhci_set_enhanced_strobe,
 };
 
+/*
+ * Reset the whole controller through the reset controller and then keep the
+ * internal clock enabled, as the Linux driver does on RK35xx: the SDHCI
+ * software reset does not reset the logic related to tuning, which may cause
+ * data read errors when an earlier boot stage already used the controller.
+ * The resets are not released, since reset_release_bulk() would assert them
+ * again.
+ */
+static void rk35xx_sdhci_reset(struct udevice *dev, struct sdhci_host *host)
+{
+	struct reset_ctl_bulk resets;
+	u32 misc;
+
+	if (reset_get_bulk(dev, &resets))
+		return;
+
+	misc = sdhci_readl(host, DWCMSHC_EMMC_MISC_CON);
+	reset_assert_bulk(&resets);
+	udelay(1);
+	reset_deassert_bulk(&resets);
+	sdhci_writel(host, misc | MISC_INTCLK_EN, DWCMSHC_EMMC_MISC_CON);
+}
+
 static int rockchip_sdhci_probe(struct udevice *dev)
 {
 	struct sdhci_data *data = (struct sdhci_data *)dev_get_driver_data(dev);
@@ -647,6 +673,9 @@ static int rockchip_sdhci_probe(struct udevice *dev)
 	if (IS_ENABLED(CONFIG_XPL_BUILD) &&
 	    dev_read_bool(dev, "u-boot,spl-fifo-mode"))
 		host->flags &= ~USE_DMA;
+
+	if (data->config_dll)
+		rk35xx_sdhci_reset(dev, host);
 
 	return sdhci_probe(dev);
 }
